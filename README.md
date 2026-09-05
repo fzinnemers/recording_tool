@@ -1,4 +1,4 @@
-# record
+# recording_tool
 
 A small local tool for recording client interviews and turning them into
 searchable transcripts. Dutch, English, or a mix of both.
