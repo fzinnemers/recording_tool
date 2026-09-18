@@ -103,6 +103,14 @@
     color: var(--muted); flex: none; width: 62px; cursor: pointer;
   }
   .seg time:hover { color: var(--accent); }
+  .seg .who {
+    font: 600 11.5px/1.9 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: .05em; text-transform: uppercase;
+    color: var(--muted); flex: none; width: 54px;
+  }
+  .seg .who.me { color: var(--accent); }
+  /* An unsure label is shown, not hidden — but it should not look certain. */
+  .seg .who.unsure { opacity: .5; font-weight: 400; }
   .seg.hit { background: color-mix(in srgb, var(--accent) 12%, transparent); }
   audio { width: 100%; margin-top: 16px; }
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 18px;
@@ -468,15 +476,28 @@ async function viewDetail(id) {
 
     let body = '';
     if (meta.status === 'done' && transcript) {
+      const NAMES = { me: 'Me', phone: 'Phone' };
+      const labelled = transcript.segments.some((s) => NAMES[s.speaker]);
+      const who = (s) => {
+        if (!labelled) return '';
+        const name = NAMES[s.speaker] || '?';
+        // Below this the call was close; say so rather than look confident.
+        const unsure = !NAMES[s.speaker] || (s.confidence || 0) < 0.35;
+        return '<span class="who ' + (s.speaker === 'me' ? 'me' : '') +
+               (unsure ? ' unsure' : '') + '">' +
+               esc(name) + (unsure && NAMES[s.speaker] ? '?' : '') + '</span>';
+      };
       const segs = transcript.segments.map((s) =>
         '<div class="seg" data-text="' + esc(s.text.toLowerCase()) + '">' +
           '<time data-at="' + s.start + '">' + clock(s.start) + '</time>' +
+          who(s) +
           '<span>' + esc(s.text) + '</span>' +
         '</div>').join('');
       body =
         '<div class="toolbar">' +
           '<input type="text" id="find" placeholder="Search this transcript…">' +
           '<a href="' + base + '/download/md">.md</a>' +
+          (labelled ? '<a href="' + base + '/download/speakers.md">labelled .md</a>' : '') +
           '<a href="' + base + '/download/txt">.txt</a>' +
           '<a href="' + base + '/download/srt">.srt</a>' +
         '</div><div class="segments">' + segs + '</div>';

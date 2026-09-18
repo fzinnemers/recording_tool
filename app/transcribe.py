@@ -17,6 +17,10 @@ from . import storage
 MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 DEFAULT_MODEL = "medium"
 
+SAMPLE_RATE = 16000   # what Whisper resamples to anyway; decoding here costs nothing
+VAD_THRESHOLD = 0.3   # the 0.5 default drops far-side speech that is soft even boosted
+SPEECH_PAD_MS = 300   # keep the run-up to a quiet word rather than clipping into it
+
 _jobs: "queue.Queue[str]" = queue.Queue()
 _worker: threading.Thread | None = None
 _worker_lock = threading.Lock()
@@ -72,6 +76,49 @@ def _load_model(name: str):
     return _model_cache[name]
 
 
+def _prepared_audio(audio: Path):
+    """Decode the recording and even out the two sides of the call.
+
+    Never fatal. On any failure Whisper opens the file itself, which is what it
+    did before this stage existed: a worse transcript of a quiet phone, not a
+    missing one.
+    """
+    try:
+        from faster_whisper.audio import decode_audio
+
+        from . import gain
+
+        samples = decode_audio(str(audio), sampling_rate=SAMPLE_RATE)
+        return gain.normalise(samples, SAMPLE_RATE), {"applied": True, "error": None}
+    except Exception as exc:  # noqa: BLE001 - a quiet transcript beats no transcript
+        return str(audio), {
+            "applied": False,
+            "error": f"{type(exc).__name__}: {exc}".strip()[:300],
+        }
+
+
+def _label_speakers(audio: Path, segments: list[dict]) -> tuple[list[dict], dict]:
+    """Attribute each segment to a side of the call.
+
+    Never fatal. An unlabelled transcript is still a good transcript, so a
+    failure here costs the labels and nothing else.
+
+    Reads the recording as it was captured, never the levelled audio: it tells
+    the two sides apart by how they differ in level and bandwidth, which is the
+    very difference `gain.normalise` is there to remove.
+    """
+    from . import diarize
+
+    try:
+        labelled = diarize.label_segments(audio, segments)
+    except Exception as exc:  # noqa: BLE001 - labels are a bonus, not the job
+        return segments, {
+            "applied": False,
+            "error": f"{type(exc).__name__}: {exc}".strip()[:300],
+        }
+    return labelled, diarize.summarise(labelled)
+
+
 def _transcribe(session_id: str) -> None:
     directory = storage.session_dir(session_id)
     meta = storage.read_meta(directory)
@@ -89,10 +136,12 @@ def _transcribe(session_id: str) -> None:
     model = _load_model(model_name)
 
     language = meta.get("language", "auto")
+    prepared, levelling = _prepared_audio(audio)
     segments_iter, info = model.transcribe(
-        str(audio),
+        prepared,
         language=None if language == "auto" else language,
         vad_filter=True,
+        vad_parameters={"threshold": VAD_THRESHOLD, "speech_pad_ms": SPEECH_PAD_MS},
         beam_size=5,
     )
 
@@ -115,6 +164,8 @@ def _transcribe(session_id: str) -> None:
             progress = min(0.99, float(segment.end) / total) if total else 0.0
             storage.update_meta(directory, progress=round(progress, 3))
 
+    segments, diarization = _label_speakers(audio, segments)
+
     meta = storage.read_meta(directory)
     if total and not meta.get("duration"):
         meta = storage.update_meta(directory, duration=round(total, 2))
@@ -126,6 +177,8 @@ def _transcribe(session_id: str) -> None:
         progress=1.0,
         detected_language=detected,
         segment_count=len(segments),
+        levelling=levelling,
+        diarization=diarization,
         error=None,
     )
 

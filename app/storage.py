@@ -21,6 +21,13 @@ _meta_lock = threading.Lock()
 VALID_LANGUAGES = {"auto", "nl", "en"}
 LANGUAGE_LABELS = {"auto": "Auto-detect", "nl": "Nederlands", "en": "English"}
 
+# Speaker labels describe the channel a voice arrived on, not who was talking:
+# everyone on the far end of the call is "Phone", however many of them there
+# were. Below this confidence the label is printed with a question mark, since
+# a visible doubt is worth more than a tidy guess.
+SPEAKER_NAMES = {"me": "Me", "phone": "Phone"}
+UNCERTAIN_BELOW = 0.35
+
 
 def slugify(name: str) -> str:
     """Turn a client name into something safe for a Windows directory name."""
@@ -169,6 +176,47 @@ def render_markdown(meta: dict, segments: list[dict], language: str) -> str:
     return "\n".join(lines)
 
 
+def has_speaker_labels(segments: list[dict]) -> bool:
+    return any(segment.get("speaker") in SPEAKER_NAMES for segment in segments)
+
+
+def _speaker_name(segment: dict) -> str:
+    speaker = segment.get("speaker")
+    if speaker not in SPEAKER_NAMES:
+        return "?"
+    name = SPEAKER_NAMES[speaker]
+    return f"{name}?" if segment.get("confidence", 0.0) < UNCERTAIN_BELOW else name
+
+
+def render_speaker_markdown(meta: dict, segments: list[dict], language: str) -> str:
+    """The transcript with each turn attributed to a side of the call."""
+    created = meta.get("created_at", "")[:16].replace("T", " ")
+    lines = [
+        f"# Interview — {meta.get('client', 'unknown')} (speaker-labelled)",
+        "",
+        f"- **Date:** {created} UTC",
+        f"- **Duration:** {_clock(meta.get('duration', 0.0))}",
+        f"- **Detected language:** {language}",
+        f"- **Model:** {meta.get('model', '')}",
+        "",
+        "> **Me** is the microphone in the room, **Phone** is everyone on the far",
+        "> end of the call — it separates the two sides, not individual voices.",
+        "> A `?` marks a turn the labelling was unsure about. Labels are a good",
+        "> guess, not a transcript of who spoke; `transcript.md` is the unlabelled",
+        "> original if one looks wrong.",
+        "",
+        "## Transcript",
+        "",
+    ]
+    for segment in segments:
+        lines.append(
+            f"**[{_clock(segment['start'])}] {_speaker_name(segment)}:** "
+            f"{segment['text'].strip()}"
+        )
+        lines.append("")
+    return "\n".join(lines)
+
+
 def render_srt(segments: list[dict]) -> str:
     blocks = []
     for index, segment in enumerate(segments, start=1):
@@ -190,6 +238,17 @@ def write_transcript(directory: Path, meta: dict, segments: list[dict], language
         render_markdown(meta, segments, language), encoding="utf-8"
     )
     (directory / "transcript.srt").write_text(render_srt(segments), encoding="utf-8")
+
+    # The labelled transcript sits beside the plain one rather than replacing
+    # it, so a wrong label costs nothing. When no side could be worked out,
+    # any file from an earlier run is cleared rather than left to go stale.
+    labelled = directory / "transcript.speakers.md"
+    if has_speaker_labels(segments):
+        labelled.write_text(
+            render_speaker_markdown(meta, segments, language), encoding="utf-8"
+        )
+    else:
+        labelled.unlink(missing_ok=True)
 
 
 def read_transcript(directory: Path) -> dict | None:

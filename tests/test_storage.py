@@ -116,3 +116,71 @@ def test_transcript_round_trip_writes_all_formats():
 def test_read_transcript_returns_none_before_transcription():
     meta = storage.create_session("Acme", "nl", "medium", consent=True)
     assert storage.read_transcript(storage.session_dir(meta["id"])) is None
+
+
+LABELLED = [
+    {"start": 0.0, "end": 2.5, "text": "Goedemiddag, bedankt voor uw tijd.",
+     "speaker": "me", "confidence": 0.9},
+    {"start": 3601.25, "end": 3605.0, "text": "So what would you change?",
+     "speaker": "phone", "confidence": 0.15},
+]
+
+
+def test_labelling_never_changes_the_plain_transcripts():
+    """The unlabelled transcript is the fallback when a label is wrong, so it
+    must be byte-identical whether or not speakers were worked out."""
+    meta = storage.create_session("Acme", "nl", "medium", consent=True)
+    assert storage.render_markdown(meta, LABELLED, "nl") == storage.render_markdown(
+        meta, SEGMENTS, "nl"
+    )
+    assert storage.render_txt(LABELLED) == storage.render_txt(SEGMENTS)
+    assert storage.render_srt(LABELLED) == storage.render_srt(SEGMENTS)
+
+
+def test_speaker_transcript_names_both_sides():
+    meta = storage.create_session("Acme", "nl", "medium", consent=True)
+    rendered = storage.render_speaker_markdown(meta, LABELLED, "nl")
+    assert "**[00:00] Me:**" in rendered
+    assert "Goedemiddag, bedankt voor uw tijd." in rendered
+
+
+def test_speaker_transcript_flags_an_uncertain_label():
+    meta = storage.create_session("Acme", "nl", "medium", consent=True)
+    rendered = storage.render_speaker_markdown(meta, LABELLED, "nl")
+    assert "**[1:00:01] Phone?:**" in rendered
+
+
+def test_write_transcript_adds_the_labelled_file():
+    meta = storage.create_session("Acme", "nl", "medium", consent=True)
+    directory = storage.session_dir(meta["id"])
+    storage.write_transcript(directory, meta, LABELLED, "nl")
+    assert (directory / "transcript.speakers.md").is_file()
+    assert storage.read_transcript(directory)["segments"][0]["speaker"] == "me"
+
+
+def test_no_labelled_file_when_speakers_are_unknown():
+    """A recording with no channel contrast gets no labelled transcript at all,
+    rather than a file full of 'unknown'."""
+    meta = storage.create_session("Acme", "nl", "medium", consent=True)
+    directory = storage.session_dir(meta["id"])
+    unknown = [dict(s, speaker="unknown", confidence=0.0) for s in SEGMENTS]
+    storage.write_transcript(directory, meta, unknown, "nl")
+    assert not (directory / "transcript.speakers.md").exists()
+
+
+def test_labelled_file_is_removed_when_relabelling_finds_nothing():
+    """Re-transcribing must not leave a stale labelled transcript behind."""
+    meta = storage.create_session("Acme", "nl", "medium", consent=True)
+    directory = storage.session_dir(meta["id"])
+    storage.write_transcript(directory, meta, LABELLED, "nl")
+    unknown = [dict(s, speaker="unknown", confidence=0.0) for s in SEGMENTS]
+    storage.write_transcript(directory, meta, unknown, "nl")
+    assert not (directory / "transcript.speakers.md").exists()
+
+
+def test_write_transcript_still_works_without_speaker_fields():
+    meta = storage.create_session("Acme", "nl", "medium", consent=True)
+    directory = storage.session_dir(meta["id"])
+    storage.write_transcript(directory, meta, SEGMENTS, "nl")
+    assert not (directory / "transcript.speakers.md").exists()
+    assert (directory / "transcript.md").is_file()

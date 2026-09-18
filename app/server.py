@@ -19,6 +19,7 @@ PORT = 8420
 
 DOWNLOADS = {
     "md": ("transcript.md", "text/markdown; charset=utf-8"),
+    "speakers.md": ("transcript.speakers.md", "text/markdown; charset=utf-8"),
     "txt": ("transcript.txt", "text/plain; charset=utf-8"),
     "srt": ("transcript.srt", "application/x-subrip; charset=utf-8"),
     "json": ("transcript.json", "application/json"),
